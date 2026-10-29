@@ -1,0 +1,22 @@
+
+services:
+  db:
+    image: postgres:16
+    container_name: traceiq-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: traceiq
+      POSTGRES_USER: traceiq_user
+      POSTGRES_PASSWORD: traceiq_local_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - traceiq_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traceiq_user -d traceiq"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  traceiq_postgres_data:

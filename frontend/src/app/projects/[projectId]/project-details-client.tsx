@@ -1,0 +1,1539 @@
+"use client";
+
+import Link from "next/link";
+
+import {
+
+  useCallback,
+
+  useEffect,
+
+  useState,
+
+  type ChangeEvent,
+
+  type FormEvent,
+
+} from "react";
+
+import { useParams } from "next/navigation";
+import { apiGet, apiPost } from "@/app/lib/api";
+
+type Project = {
+
+  id: string;
+
+  name: string;
+
+  description: string | null;
+
+  base_url: string | null;
+
+  created_at: string;
+
+};
+
+type Endpoint = {
+
+  id: string;
+
+  path: string;
+
+  method: string;
+
+  operation_id: string | null;
+
+  summary: string | null;
+
+  parameters: unknown[];
+
+  tags: string[];
+
+  created_at: string;
+
+};
+
+type ImportResult = {
+
+  project_id: string;
+
+  api_title: string;
+
+  endpoint_count: number;
+
+  new_endpoints_imported?: number;
+
+  message: string;
+
+};
+
+type AssertionResult = {
+
+  type: string;
+
+  passed: boolean;
+
+  message: string;
+
+  path?: string;
+
+  expected?: unknown;
+
+  actual?: unknown;
+
+};
+
+type TestCase = {
+
+  id: string;
+
+  project_id: string;
+
+  endpoint_id: string;
+
+  name: string;
+
+  expected_status: number;
+
+  assertions: Record<string, unknown>[];
+
+  created_at: string;
+
+};
+
+type TestRunResult = {
+
+  run_id: string;
+
+  project_id: string;
+
+  test_case_id: string;
+
+  endpoint?: string;
+
+  method?: string;
+
+  test_name: string;
+
+  passed: boolean;
+
+  expected_status: number;
+
+  actual_status: number | null;
+
+  response_time_ms: number;
+
+  error: string | null;
+
+  assertions: AssertionResult[];
+
+  created_at?: string;
+
+};
+
+type TestRunHistoryItem = {
+  run_id: string;
+  passed: boolean;
+  expected_status: number;
+  actual_status: number | null;
+  response_time_ms: number | null;
+  error: string | null;
+  assertion_results: AssertionResult[];
+  created_at: string;
+};
+
+type TestRunHistoryResponse = {
+  project_id: string;
+  test_case_id: string;
+  total_returned: number;
+  runs: TestRunHistoryItem[];
+};
+
+
+type HistoryComparison = {
+  label: string;
+  tone: "danger" | "warning" | "success" | "neutral";
+};
+
+function compareRunWithPrevious(
+  current: TestRunHistoryItem,
+  previous: TestRunHistoryItem | undefined,
+): HistoryComparison {
+  if (!previous) {
+    return { label: "BASELINE", tone: "neutral" };
+  }
+
+  if (previous.passed && !current.passed) {
+    return { label: "PASS → FAIL", tone: "danger" };
+  }
+
+  const currentLatency = current.response_time_ms;
+  const previousLatency = previous.response_time_ms;
+
+  if (currentLatency != null && previousLatency != null && previousLatency > 0) {
+    const increase = currentLatency - previousLatency;
+    const decrease = previousLatency - currentLatency;
+
+    if (increase >= 100 && increase / previousLatency >= 0.5) {
+      return { label: "PERFORMANCE REGRESSION", tone: "warning" };
+    }
+
+    if (decrease >= 100 && decrease / previousLatency >= 0.5) {
+      return { label: "PERFORMANCE IMPROVED", tone: "success" };
+    }
+  }
+
+  return { label: "NO REGRESSION", tone: "neutral" };
+}
+
+function comparisonToneClass(tone: HistoryComparison["tone"]): string {
+  switch (tone) {
+    case "danger":
+      return "border-red-400/30 bg-red-400/10 text-red-300";
+    case "warning":
+      return "border-amber-400/30 bg-amber-400/10 text-amber-300";
+    case "success":
+      return "border-emerald-400/30 bg-emerald-400/10 text-emerald-300";
+    default:
+      return "border-slate-400/20 bg-slate-400/5 text-slate-400";
+  }
+}
+
+type TestRunSummary = {
+  project_id: string; total_runs: number; passed_runs: number; failed_runs: number;
+  pass_rate_percent: number; average_response_time_ms: number | null; last_run_at: string | null;
+};
+type Regression = {
+  test_case_id: string; test_name: string; latest_run_id: string; previous_run_id: string;
+  latest_passed: boolean; previous_passed: boolean; previous_response_time_ms: number | null;
+  latest_response_time_ms: number | null; reasons: string[]; detected_at: string;
+};
+type RegressionResponse = { project_id: string; regression_count: number; regressions: Regression[] };
+
+const methodColors: Record<string, string> = {
+
+  GET: "bg-sky-400/10 text-sky-300 border-sky-400/20",
+
+  POST: "bg-emerald-400/10 text-emerald-300 border-emerald-400/20",
+
+  PUT: "bg-amber-400/10 text-amber-300 border-amber-400/20",
+
+  PATCH: "bg-violet-400/10 text-violet-300 border-violet-400/20",
+
+  DELETE: "bg-red-400/10 text-red-300 border-red-400/20",
+
+};
+
+const inputClass =
+
+  "w-full rounded-lg border border-white/10 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 outline-none focus:border-emerald-400";
+
+const buttonClass =
+
+  "rounded-lg bg-emerald-400 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50";
+
+function Metric({ label, value, tone, wide = false }: { label: string; value: string | number; tone?: "success" | "danger"; wide?: boolean }) {
+  const toneClass = tone === "success" ? "border-emerald-400/20 bg-emerald-400/5 text-emerald-300" : tone === "danger" ? "border-red-400/20 bg-red-400/5 text-red-300" : "border-white/10 bg-slate-950/60 text-slate-100";
+  return <div className={`rounded-xl border p-4 ${toneClass} ${wide ? "sm:col-span-2" : ""}`}><p className="text-xs text-slate-400">{label}</p><p className="mt-2 break-words text-xl font-semibold">{value}</p></div>;
+}
+
+export default function ProjectDetailsPage() {
+
+  const params = useParams<{ projectId: string }>();
+
+  const projectId = params.projectId;
+
+  const [project, setProject] = useState<Project | null>(null);
+
+  const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
+
+  const [testCases, setTestCases] = useState<TestCase[]>([]);
+
+  const [latestResults, setLatestResults] = useState<
+
+    Record<string, TestRunResult>
+
+  >({});
+
+  const [runHistory, setRunHistory] = useState<Record<string, TestRunHistoryItem[]>>({});
+  const [runHistoryExpanded, setRunHistoryExpanded] = useState<Record<string, boolean>>({});
+  const [runHistoryLoading, setRunHistoryLoading] = useState<Record<string, boolean>>({});
+  const [runHistoryErrors, setRunHistoryErrors] = useState<Record<string, string>>({});
+  const [selectedComparisonRuns, setSelectedComparisonRuns] = useState<Record<string, string[]>>({});
+
+  const [testRunSummary, setTestRunSummary] = useState<TestRunSummary | null>(null);
+  const [regressionData, setRegressionData] = useState<RegressionResponse | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  const [analyticsError, setAnalyticsError] = useState("");
+
+  const [specification, setSpecification] = useState("");
+
+  const [fileName, setFileName] = useState("");
+
+  const [testName, setTestName] = useState("");
+
+  const [selectedEndpointId, setSelectedEndpointId] = useState("");
+
+  const [expectedStatus, setExpectedStatus] = useState("200");
+
+  const [assertionType, setAssertionType] = useState<
+
+    "none" | "contains" | "json_value"
+
+  >("none");
+
+  const [assertionValue, setAssertionValue] = useState("");
+
+  const [assertionPath, setAssertionPath] = useState("");
+
+  const [assertionExpected, setAssertionExpected] = useState("");
+
+  const [loading, setLoading] = useState(true);
+
+  const [importing, setImporting] = useState(false);
+
+  const [creatingTest, setCreatingTest] = useState(false);
+
+  const [runningTestId, setRunningTestId] = useState<string | null>(null);
+
+  const [error, setError] = useState("");
+
+  const [success, setSuccess] = useState("");
+
+  const loadProjectData = useCallback(async () => {
+
+    setError("");
+
+    try {
+
+      const [projectData, endpointData, testCaseData] = await Promise.all([
+        apiGet<Project>(`/api/v1/projects/${projectId}`),
+        apiGet<{ endpoints: Endpoint[] }>(
+          `/api/v1/openapi/projects/${projectId}/endpoints`,
+        ),
+        apiGet<TestCase[]>(`/api/v1/projects/${projectId}/test-cases`),
+      ]);
+
+      setProject(projectData);
+
+      setEndpoints(endpointData.endpoints ?? []);
+
+      setTestCases(testCaseData ?? []);
+
+      setSelectedEndpointId((current) => {
+
+        if (
+
+          current &&
+
+          endpointData.endpoints?.some((endpoint) => endpoint.id === current)
+
+        ) {
+
+          return current;
+
+        }
+
+        return endpointData.endpoints?.[0]?.id ?? "";
+
+      });
+
+    } catch (err) {
+
+      setError(err instanceof Error ? err.message : "Could not load project data.");
+
+    } finally {
+
+      setLoading(false);
+
+    }
+
+  }, [projectId]);
+
+  // Fetch on route changes without invoking a state-updating callback directly*
+
+  // inside the effect. The cancellation flag prevents stale updates on unmount.*
+
+  const loadAnalytics = useCallback(async () => {
+    setAnalyticsLoading(true);
+    setAnalyticsError("");
+    try {
+      const [summary, regressions] = await Promise.all([
+        apiGet<TestRunSummary>(
+          `/api/v1/projects/${projectId}/test-runs/summary`,
+        ),
+        apiGet<RegressionResponse>(
+          `/api/v1/projects/${projectId}/test-runs/regressions`,
+        ),
+      ]);
+      setTestRunSummary(summary);
+      setRegressionData(regressions);
+    } catch (err) {
+      setAnalyticsError(err instanceof Error ? err.message : "Could not load test analytics.");
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    // Defer the initial request until after the effect has completed.
+    const timer = window.setTimeout(() => {
+      void loadAnalytics();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadAnalytics]);
+
+  useEffect(() => {
+
+    let cancelled = false;
+
+    async function fetchData() {
+
+      try {
+
+        const [projectData, endpointData, testCaseData] = await Promise.all([
+        apiGet<Project>(`/api/v1/projects/${projectId}`),
+        apiGet<{ endpoints: Endpoint[] }>(
+          `/api/v1/openapi/projects/${projectId}/endpoints`,
+        ),
+        apiGet<TestCase[]>(`/api/v1/projects/${projectId}/test-cases`),
+      ]);
+
+        if (cancelled) return;
+
+        setProject(projectData);
+
+        setEndpoints(endpointData.endpoints ?? []);
+
+        setTestCases(testCaseData ?? []);
+
+        setSelectedEndpointId((current) => {
+
+          if (
+
+            current &&
+
+            endpointData.endpoints?.some((endpoint) => endpoint.id === current)
+
+          ) {
+
+            return current;
+
+          }
+
+          return endpointData.endpoints?.[0]?.id ?? "";
+
+        });
+
+        setError("");
+
+      } catch (err) {
+
+        if (!cancelled) {
+
+          setError(
+
+            err instanceof Error ? err.message : "Could not load project data.",
+
+          );
+
+        }
+
+      } finally {
+
+        if (!cancelled) setLoading(false);
+
+      }
+
+    }
+
+    void fetchData();
+
+    return () => {
+
+      cancelled = true;
+
+    };
+
+  }, [projectId]);
+
+  async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+
+    const file = event.target.files?.[0];
+
+    setFileName("");
+
+    setError("");
+
+    setSuccess("");
+
+    if (!file) return;
+
+    const lowerName = file.name.toLowerCase();
+
+    if (
+
+      !lowerName.endsWith(".json") &&
+
+      !lowerName.endsWith(".yaml") &&
+
+      !lowerName.endsWith(".yml")
+
+    ) {
+
+      setError("Choose an OpenAPI JSON or YAML file.");
+
+      event.target.value = "";
+
+      return;
+
+    }
+
+    try {
+
+      setSpecification(await file.text());
+
+      setFileName(file.name);
+
+    } catch {
+
+      setError("Could not read the selected file.");
+
+    }
+
+  }
+
+  async function importOpenAPI() {
+
+    setError("");
+
+    setSuccess("");
+
+    if (!specification.trim()) {
+
+      setError("Paste an OpenAPI specification or select a file first.");
+
+      return;
+
+    }
+
+    let parsed: unknown;
+
+    try {
+
+      parsed = JSON.parse(specification);
+
+    } catch {
+
+      setError(
+
+        "The pasted specification is not valid JSON. Uploaded YAML files are not parsed by this form yet.",
+
+      );
+
+      return;
+
+    }
+
+    setImporting(true);
+
+    try {
+
+      const result = await apiPost<ImportResult>(
+        `/api/v1/openapi/projects/${projectId}/import`,
+        parsed,
+      );
+
+      setSuccess(
+
+        `Imported "${result.api_title}" successfully. ${result.endpoint_count} endpoints detected.`,
+
+      );
+
+      await loadProjectData();
+
+    } catch (err) {
+
+      setError(err instanceof Error ? err.message : "OpenAPI import failed.");
+
+    } finally {
+
+      setImporting(false);
+
+    }
+
+  }
+
+  async function createTestCase(event: FormEvent<HTMLFormElement>) {
+
+    event.preventDefault();
+
+    setError("");
+
+    setSuccess("");
+
+    if (!selectedEndpointId) {
+
+      setError("Import an endpoint before creating a test case.");
+
+      return;
+
+    }
+
+    const status = Number(expectedStatus);
+
+    if (!Number.isInteger(status) || status < 100 || status > 599) {
+
+      setError("Expected status must be an integer between 100 and 599.");
+
+      return;
+
+    }
+
+    const assertions: Record<string, unknown>[] = [];
+
+    if (assertionType === "contains") {
+
+      if (!assertionValue.trim()) {
+
+        setError("Enter the text to look for in the response.");
+
+        return;
+
+      }
+
+      assertions.push({ type: "contains", value: assertionValue });
+
+    }
+
+    if (assertionType === "json_value") {
+
+      if (!assertionPath.trim()) {
+
+        setError("Enter a JSON path, such as status or data.id.");
+
+        return;
+
+      }
+
+      if (!assertionExpected.trim()) {
+
+        setError("Enter the expected JSON value.");
+
+        return;
+
+      }
+
+      let expected: unknown;
+
+      try {
+
+        expected = JSON.parse(assertionExpected);
+
+      } catch {
+
+        expected = assertionExpected;
+
+      }
+
+      assertions.push({
+
+        type: "json_value",
+
+        path: assertionPath.trim(),
+
+        expected,
+
+      });
+
+    }
+
+    setCreatingTest(true);
+
+    try {
+
+      const created = await apiPost<TestCase>(
+        `/api/v1/projects/${projectId}/test-cases`,
+        {
+          endpoint_id: selectedEndpointId,
+          name: testName.trim(),
+          expected_status: status,
+          assertions,
+        },
+      );
+
+      setTestCases((current) => [
+
+        created,
+
+        ...current.filter((item) => item.id !== created.id),
+
+      ]);
+
+      setTestName("");
+
+      setAssertionType("none");
+
+      setAssertionValue("");
+
+      setAssertionPath("");
+
+      setAssertionExpected("");
+
+      setSuccess(`Test case "${created.name}" created successfully.`);
+
+    } catch (err) {
+
+      setError(err instanceof Error ? err.message : "Could not create test case.");
+
+    } finally {
+
+      setCreatingTest(false);
+
+    }
+
+  }
+
+  async function loadTestRunHistory(testCaseId: string) {
+    setRunHistoryLoading((current) => ({ ...current, [testCaseId]: true }));
+    setRunHistoryErrors((current) => ({ ...current, [testCaseId]: "" }));
+
+    try {
+      const response = await apiGet<TestRunHistoryResponse>(
+        `/api/v1/projects/${projectId}/test-cases/${testCaseId}/runs?limit=20`,
+      );
+      setRunHistory((current) => ({ ...current, [testCaseId]: response.runs ?? [] }));
+    } catch (err) {
+      setRunHistoryErrors((current) => ({
+        ...current,
+        [testCaseId]: err instanceof Error ? err.message : "Could not load test-run history.",
+      }));
+    } finally {
+      setRunHistoryLoading((current) => ({ ...current, [testCaseId]: false }));
+    }
+  }
+
+  function toggleRunComparisonSelection(testCaseId: string, runId: string) {
+    setSelectedComparisonRuns((current) => {
+      const selected = current[testCaseId] ?? [];
+      if (selected.includes(runId)) {
+        return { ...current, [testCaseId]: selected.filter((id) => id !== runId) };
+      }
+      if (selected.length >= 2) {
+        return { ...current, [testCaseId]: [selected[1], runId] };
+      }
+      return { ...current, [testCaseId]: [...selected, runId] };
+    });
+  }
+
+  async function toggleTestRunHistory(testCaseId: string) {
+    const isExpanded = Boolean(runHistoryExpanded[testCaseId]);
+    setRunHistoryExpanded((current) => ({ ...current, [testCaseId]: !isExpanded }));
+    if (!isExpanded && !runHistory[testCaseId]) {
+      await loadTestRunHistory(testCaseId);
+    }
+  }
+
+  async function runTest(testCase: TestCase) {
+
+    setError("");
+
+    setSuccess("");
+
+    setRunningTestId(testCase.id);
+
+    try {
+
+      const result = await apiPost<TestRunResult>(
+        `/api/v1/projects/${projectId}/test-cases/${testCase.id}/run`,
+      );
+
+      setLatestResults((current) => ({ ...current, [testCase.id]: result }));
+      await loadAnalytics();
+      if (runHistoryExpanded[testCase.id]) {
+        await loadTestRunHistory(testCase.id);
+      }
+
+      setSuccess(
+
+        result.passed
+
+          ? `Test "${testCase.name}" passed.`
+
+          : `Test "${testCase.name}" failed. Check its result below.`,
+
+      );
+
+    } catch (err) {
+
+      setError(err instanceof Error ? err.message : "Could not execute test case.");
+
+    } finally {
+
+      setRunningTestId(null);
+
+    }
+
+  }
+
+  if (loading) {
+
+    return (
+
+      <main className="min-h-screen bg-slate-950 p-8 text-slate-300">
+
+        Loading project…
+
+      </main>
+
+    );
+
+  }
+
+  return (
+
+    <main className="min-h-screen bg-slate-950 text-slate-100">
+
+      <header className="flex items-center justify-between border-b border-white/10 px-5 py-5 sm:px-8">
+
+        <Link href="/" className="flex items-center gap-3">
+
+          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-400 font-bold text-slate-950">
+
+            T
+
+          </span>
+
+          <span>
+
+            <span className="block text-lg font-semibold">TraceIQ</span>
+
+            <span className="block text-xs text-slate-400">API intelligence</span>
+
+          </span>
+
+        </Link>
+
+        <Link
+
+          href="/projects"
+
+          className="rounded-lg border border-white/10 px-4 py-2 text-sm text-slate-300 transition hover:bg-white/5"
+
+        >
+
+          ← Projects
+
+        </Link>
+
+      </header>
+
+      <div className="mx-auto max-w-7xl space-y-8 p-5 sm:p-8">
+
+        {error && (
+
+          <div role="alert" className="rounded-xl border border-red-400/20 bg-red-400/5 p-4 text-sm text-red-300">
+
+            {error}
+
+          </div>
+
+        )}
+
+        {success && (
+
+          <div role="status" className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 p-4 text-sm text-emerald-300">
+
+            {success}
+
+          </div>
+
+        )}
+
+        {project && (
+
+          <>
+
+            <section>
+
+              <p className="text-sm text-emerald-300">Workspace / Projects / Details</p>
+
+              <h1 className="mt-2 wrap-break-word text-3xl font-semibold tracking-tight">{project.name}</h1>
+
+              <p className="mt-2 break-all text-sm text-slate-400">
+
+                {project.base_url || "No base URL configured"}
+
+              </p>
+
+              {project.description && <p className="mt-2 text-sm text-slate-400">{project.description}</p>}
+
+            </section>
+
+            <section className="rounded-2xl border border-white/10 bg-slate-900/60 p-5 sm:p-6">
+
+            <section className="space-y-5 rounded-2xl border border-white/10 bg-slate-900/60 p-5 sm:p-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div><h2 className="text-lg font-semibold">Test analytics</h2><p className="mt-1 text-sm text-slate-400">Execution health and detected regressions for this project.</p></div>
+                <button type="button" onClick={() => void loadAnalytics()} disabled={analyticsLoading} className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 hover:bg-white/5 disabled:opacity-50">{analyticsLoading ? "Refreshing…" : "Refresh analytics"}</button>
+              </div>
+              {analyticsError && <div role="alert" className="rounded-xl border border-red-400/20 bg-red-400/5 p-3 text-sm text-red-300">{analyticsError}</div>}
+              {analyticsLoading && !testRunSummary ? <p className="text-sm text-slate-400">Loading test analytics…</p> : testRunSummary ? (
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <Metric label="Total runs" value={testRunSummary.total_runs} />
+                  <Metric label="Passed" value={testRunSummary.passed_runs} tone="success" />
+                  <Metric label="Failed" value={testRunSummary.failed_runs} tone="danger" />
+                  <Metric label="Pass rate" value={`${testRunSummary.pass_rate_percent.toFixed(1)}%`} />
+                  <Metric label="Average response time" value={testRunSummary.average_response_time_ms == null ? "—" : `${testRunSummary.average_response_time_ms.toFixed(2)} ms`} wide />
+                  <Metric label="Last test run" value={testRunSummary.last_run_at ? new Date(testRunSummary.last_run_at).toLocaleString() : "No runs yet"} wide />
+                </div>
+              ) : !analyticsError ? <p className="text-sm text-slate-400">No test-run summary is available yet.</p> : null}
+              <div className="border-t border-white/10 pt-5">
+                <div className="flex flex-wrap items-center gap-3"><h3 className="font-semibold">Regression detection</h3><span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${(regressionData?.regression_count ?? 0) > 0 ? "border-amber-400/30 bg-amber-400/10 text-amber-300" : "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"}`}>{regressionData?.regression_count ?? 0} detected</span></div>
+                <p className="mt-1 text-sm text-slate-400">Compares the two most recent runs for each test case.</p>
+                {!regressionData && analyticsLoading ? <p className="mt-4 text-sm text-slate-400">Checking for regressions…</p> : regressionData?.regressions.length === 0 ? <div className="mt-4 rounded-xl border border-dashed border-white/10 p-5 text-sm text-slate-400">No regressions detected. Run tests again to monitor changes over time.</div> : regressionData && (
+                  <div className="mt-4 space-y-3">{regressionData.regressions.map((r) => <article key={`${r.test_case_id}-${r.latest_run_id}`} className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="break-words font-medium">{r.test_name}</h4><p className="mt-1 text-xs text-slate-400">{r.previous_passed ? "Previous: PASS" : "Previous: FAIL"}{" → "}{r.latest_passed ? "Latest: PASS" : "Latest: FAIL"}</p></div><span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-xs font-semibold text-amber-300">Regression</span></div>
+                    <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-300">{r.reasons.map((reason, i) => <li key={`${reason}-${i}`}>{reason}</li>)}</ul>
+                    <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-400"><span>Previous latency: {r.previous_response_time_ms == null ? "—" : `${r.previous_response_time_ms} ms`}</span><span>Latest latency: {r.latest_response_time_ms == null ? "—" : `${r.latest_response_time_ms} ms`}</span><span>Detected: {new Date(r.detected_at).toLocaleString()}</span></div>
+                  </article>)}</div>
+                )}
+              </div>
+            </section>
+
+              <h2 className="text-lg font-semibold">Import OpenAPI</h2>
+
+              <p className="mt-1 text-sm leading-6 text-slate-400">
+
+                Import an OpenAPI 3 specification to discover endpoints for this project. The pasted editor accepts JSON.
+
+              </p>
+
+              <div className="mt-5">
+
+                <label htmlFor="openapi-file" className="mb-2 block text-sm font-medium">Select a specification file</label>
+
+                <input
+
+                  id="openapi-file"
+
+                  type="file"
+
+                  accept=".json,.yaml,.yml,application/json"
+
+                  onChange={handleFileChange}
+
+                  className="block w-full text-sm text-slate-400 file:mr-4 file:rounded-lg file:border-0 file:bg-emerald-400 file:px-4 file:py-2 file:font-semibold file:text-slate-950 hover:file:bg-emerald-300"
+
+                />
+
+                {fileName && <p className="mt-2 text-xs text-emerald-300">Selected: {fileName}</p>}
+
+              </div>
+
+              <div className="mt-5">
+
+                <label htmlFor="openapi-spec" className="mb-2 block text-sm font-medium">Or paste the OpenAPI JSON</label>
+
+                <textarea
+
+                  id="openapi-spec"
+
+                  rows={8}
+
+                  value={specification}
+
+                  onChange={(event) => setSpecification(event.target.value)}
+
+                  placeholder={'{\n  "openapi": "3.0.3",\n  "info": { "title": "Demo API", "version": "1.0.0" },\n  "paths": {}\n}'}
+
+                  spellCheck={false}
+
+                  className={`${inputClass} resize-y font-mono leading-6`}
+
+                />
+
+              </div>
+
+              <button type="button" onClick={importOpenAPI} disabled={importing} className={`${buttonClass} mt-4`}>
+
+                {importing ? "Importing…" : "Import specification"}
+
+              </button>
+
+            </section>
+
+            <section className="rounded-2xl border border-white/10 bg-slate-900/60 p-5 sm:p-6">
+
+              <div className="flex flex-wrap items-center justify-between gap-3">
+
+                <div>
+
+                  <h2 className="text-lg font-semibold">API endpoints</h2>
+
+                  <p className="mt-1 text-sm text-slate-400">Discovered endpoints for this project.</p>
+
+                </div>
+
+                <span className="rounded-lg border border-white/10 px-3 py-2 text-xs text-slate-300">{endpoints.length} endpoints</span>
+
+              </div>
+
+              {endpoints.length === 0 ? (
+
+                <div className="mt-5 rounded-xl border border-dashed border-white/10 p-8 text-center">
+
+                  <p className="font-medium">No endpoints imported yet</p>
+
+                  <p className="mt-2 text-sm text-slate-400">Import an OpenAPI specification to see endpoints here.</p>
+
+                </div>
+
+              ) : (
+
+                <div className="mt-5 space-y-3">
+
+                  {endpoints.map((endpoint) => (
+
+                    <article key={endpoint.id} className="rounded-xl border border-white/10 bg-slate-950/60 p-4">
+
+                      <div className="flex flex-wrap items-center gap-3">
+
+                        <span className={`rounded-md border px-2.5 py-1 text-xs font-bold ${methodColors[endpoint.method.toUpperCase()] ?? "border-white/10 bg-white/5 text-slate-300"}`}>
+
+                          {endpoint.method.toUpperCase()}
+
+                        </span>
+
+                        <code className="break-all text-sm text-slate-100">{endpoint.path}</code>
+
+                      </div>
+
+                      {endpoint.summary && <p className="mt-3 text-sm text-slate-400">{endpoint.summary}</p>}
+
+                      {endpoint.operation_id && <p className="mt-2 break-all text-xs text-slate-500">Operation: {endpoint.operation_id}</p>}
+
+                      {endpoint.tags?.length > 0 && (
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+
+                          {endpoint.tags.map((tag) => <span key={tag} className="rounded-full bg-white/5 px-2.5 py-1 text-xs text-slate-400">{tag}</span>)}
+
+                        </div>
+
+                      )}
+
+                    </article>
+
+                  ))}
+
+                </div>
+
+              )}
+
+            </section>
+
+            <section className="rounded-2xl border border-white/10 bg-slate-900/60 p-5 sm:p-6">
+
+              <div className="mb-5">
+
+                <h2 className="text-lg font-semibold">Create API test case</h2>
+
+                <p className="mt-1 text-sm leading-6 text-slate-400">Choose an imported endpoint, define the expected response, and optionally add a response assertion.</p>
+
+              </div>
+
+              {endpoints.length === 0 ? (
+
+                <p className="rounded-xl border border-dashed border-white/10 p-5 text-sm text-slate-400">Import an endpoint before creating a test case.</p>
+
+              ) : (
+
+                <form onSubmit={createTestCase} className="space-y-5">
+
+                  <div>
+
+                    <label htmlFor="test-name" className="mb-2 block text-sm font-medium">Test name</label>
+
+                    <input id="test-name" required maxLength={200} value={testName} onChange={(event) => setTestName(event.target.value)} placeholder="Health endpoint returns 200" className={inputClass} />
+
+                  </div>
+
+                  <div>
+
+                    <label htmlFor="test-endpoint" className="mb-2 block text-sm font-medium">API endpoint</label>
+
+                    <select id="test-endpoint" required value={selectedEndpointId} onChange={(event) => setSelectedEndpointId(event.target.value)} className={inputClass}>
+
+                      {endpoints.map((endpoint) => (
+
+                        <option key={endpoint.id} value={endpoint.id}>
+
+                          {endpoint.method.toUpperCase()} {endpoint.path}{endpoint.summary ? ` — ${endpoint.summary}` : ""}
+
+                        </option>
+
+                      ))}
+
+                    </select>
+
+                  </div>
+
+                  <div className="max-w-xs">
+
+                    <label htmlFor="expected-status" className="mb-2 block text-sm font-medium">Expected HTTP status</label>
+
+                    <input id="expected-status" type="number" min={100} max={599} required value={expectedStatus} onChange={(event) => setExpectedStatus(event.target.value)} className={inputClass} />
+
+                  </div>
+
+                  <div>
+
+                    <label htmlFor="assertion-type" className="mb-2 block text-sm font-medium">Optional response assertion</label>
+
+                    <select id="assertion-type" value={assertionType} onChange={(event) => setAssertionType(event.target.value as "none" | "contains" | "json_value")} className={inputClass}>
+
+                      <option value="none">No additional assertion</option>
+
+                      <option value="contains">Response body contains text</option>
+
+                      <option value="json_value">JSON field equals expected value</option>
+
+                    </select>
+
+                  </div>
+
+                  {assertionType === "contains" && (
+
+                    <div>
+
+                      <label htmlFor="assertion-value" className="mb-2 block text-sm font-medium">Text expected in response</label>
+
+                      <input id="assertion-value" required value={assertionValue} onChange={(event) => setAssertionValue(event.target.value)} placeholder="healthy" className={inputClass} />
+
+                    </div>
+
+                  )}
+
+                  {assertionType === "json_value" && (
+
+                    <div className="grid gap-4 sm:grid-cols-2">
+
+                      <div>
+
+                        <label htmlFor="assertion-path" className="mb-2 block text-sm font-medium">JSON path</label>
+
+                        <input id="assertion-path" required value={assertionPath} onChange={(event) => setAssertionPath(event.target.value)} placeholder="status or data.id" className={inputClass} />
+
+                      </div>
+
+                      <div>
+
+                        <label htmlFor="assertion-expected" className="mb-2 block text-sm font-medium">Expected value</label>
+
+                        <input id="assertion-expected" required value={assertionExpected} onChange={(event) => setAssertionExpected(event.target.value)} placeholder={'healthy or "healthy"'} className={inputClass} />
+
+                        <p className="mt-2 text-xs text-slate-500">Valid JSON is parsed first; otherwise, the value is treated as text.</p>
+
+                      </div>
+
+                    </div>
+
+                  )}
+
+                  <button type="submit" disabled={creatingTest || !selectedEndpointId} className={buttonClass}>
+
+                    {creatingTest ? "Creating…" : "Create test case"}
+
+                  </button>
+
+                </form>
+
+              )}
+
+            </section>
+
+            <section className="rounded-2xl border border-white/10 bg-slate-900/60 p-5 sm:p-6">
+
+              <div className="flex flex-wrap items-center justify-between gap-3">
+
+                <div>
+
+                  <h2 className="text-lg font-semibold">Test cases</h2>
+
+                  <p className="mt-1 text-sm text-slate-400">Create tests, execute them, and inspect the latest result.</p>
+
+                </div>
+
+                <div className="flex items-center gap-3">
+
+                  <span className="rounded-lg border border-white/10 px-3 py-2 text-xs text-slate-300">{testCases.length} test cases</span>
+
+                  <button type="button" onClick={() => void loadProjectData()} className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 hover:bg-white/5">Refresh</button>
+
+                </div>
+
+              </div>
+
+              {testCases.length === 0 ? (
+
+                <div className="mt-5 rounded-xl border border-dashed border-white/10 p-8 text-center">
+
+                  <p className="font-medium">No test cases yet</p>
+
+                  <p className="mt-2 text-sm text-slate-400">Create your first test using the form above.</p>
+
+                </div>
+
+              ) : (
+
+                <div className="mt-5 space-y-4">
+
+                  {testCases.map((testCase) => {
+
+                    const endpoint = endpoints.find((item) => item.id === testCase.endpoint_id);
+
+                    const result = latestResults[testCase.id];
+
+                    return (
+
+                      <article key={testCase.id} className="rounded-xl border border-white/10 bg-slate-950/60 p-4 sm:p-5">
+
+                        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+
+                          <div className="min-w-0">
+
+                            <h3 className="wrap-break-word font-semibold">{testCase.name}</h3>
+
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+
+                              {endpoint && (
+
+                                <>
+
+                                  <span className={`rounded-md border px-2 py-1 text-xs font-bold ${methodColors[endpoint.method.toUpperCase()] ?? "border-white/10 bg-white/5"}`}>{endpoint.method.toUpperCase()}</span>
+
+                                  <code className="break-all text-xs text-slate-300">{endpoint.path}</code>
+
+                                </>
+
+                              )}
+
+                            </div>
+
+                            <p className="mt-2 text-xs text-slate-500">Expected status: {testCase.expected_status} · {testCase.assertions?.length ?? 0} assertion(s)</p>
+
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void toggleTestRunHistory(testCase.id)}
+                              className="rounded-lg border border-white/10 px-3 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/5"
+                              aria-expanded={Boolean(runHistoryExpanded[testCase.id])}
+                            >
+                              {runHistoryExpanded[testCase.id] ? "Hide history" : "Run history"}
+                            </button>
+                            <button type="button" onClick={() => void runTest(testCase)} disabled={runningTestId !== null} className={buttonClass}>
+                              {runningTestId === testCase.id ? "Running…" : "Run Test"}
+                            </button>
+                          </div>
+
+                        </div>
+
+                        {result && (
+
+                          <div className="mt-5 border-t border-white/10 pt-4">
+
+                            <div className="flex flex-wrap items-center gap-3">
+
+                              <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${result.passed ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "border-red-400/30 bg-red-400/10 text-red-300"}`}>{result.passed ? "PASSED" : "FAILED"}</span>
+
+                              <span className="text-sm text-slate-300">Expected: {result.expected_status}</span>
+
+                              <span className="text-sm text-slate-300">Actual: {result.actual_status ?? "No response"}</span>
+
+                              <span className="text-sm text-slate-400">{result.response_time_ms} ms</span>
+
+                            </div>
+
+                            {result.error && <p className="mt-3 wrap-break-word text-sm text-red-300">{result.error}</p>}
+
+                            {result.assertions?.length > 0 && (
+
+                              <div className="mt-4 space-y-2">
+
+                                <h4 className="text-sm font-medium">Assertion results</h4>
+
+                                {result.assertions.map((assertion, index) => (
+
+                                  <div key={`${assertion.type}-${index}`} className="flex items-start gap-2 rounded-lg bg-white/3 p-3 text-sm">
+
+                                    <span className={assertion.passed ? "text-emerald-300" : "text-red-300"}>{assertion.passed ? "✓" : "✕"}</span>
+
+                                    <div className="min-w-0">
+
+                                      <p className="font-medium">{assertion.type}{assertion.path ? `: ${assertion.path}` : ""}</p>
+
+                                      <p className="mt-1 wrap-break-word text-slate-400">{assertion.message}</p>
+
+                                      {assertion.expected !== undefined && (
+
+                                        <p className="mt-1 wrap-break-word text-xs text-slate-500">
+
+                                          Expected: {JSON.stringify(assertion.expected)}{assertion.actual !== undefined ? ` · Actual: ${JSON.stringify(assertion.actual)}` : ""}
+
+                                        </p>
+
+                                      )}
+
+                                    </div>
+
+                                  </div>
+
+                                ))}
+
+                              </div>
+
+                            )}
+
+                          </div>
+
+                        )}
+
+                        {runHistoryExpanded[testCase.id] && (
+                          <section className="mt-5 border-t border-white/10 pt-4" aria-label={`Run history for ${testCase.name}`}>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <h4 className="font-semibold">Execution history</h4>
+                              <button
+                                type="button"
+                                onClick={() => void loadTestRunHistory(testCase.id)}
+                                disabled={Boolean(runHistoryLoading[testCase.id])}
+                                className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5 disabled:opacity-50"
+                              >
+                                {runHistoryLoading[testCase.id] ? "Loading…" : "Refresh history"}
+                              </button>
+                            </div>
+
+                            {runHistoryLoading[testCase.id] && !runHistory[testCase.id] && (
+                              <p className="mt-3 text-sm text-slate-400">Loading previous executions…</p>
+                            )}
+
+                            {runHistoryErrors[testCase.id] && (
+                              <p className="mt-3 rounded-lg border border-red-400/20 bg-red-400/5 p-3 text-sm text-red-300">
+                                {runHistoryErrors[testCase.id]}
+                              </p>
+                            )}
+
+                            {!runHistoryLoading[testCase.id] && !runHistoryErrors[testCase.id] && runHistory[testCase.id]?.length === 0 && (
+                              <p className="mt-3 text-sm text-slate-400">No recorded executions yet.</p>
+                            )}
+
+                            {(() => {
+                              const historyRuns = runHistory[testCase.id] ?? [];
+                              const assertionChecks = historyRuns.flatMap((run) => run.assertion_results ?? []);
+                              const passedChecks = assertionChecks.filter((assertion) => assertion.passed).length;
+                              const failedChecks = assertionChecks.length - passedChecks;
+                              const assertionRate = assertionChecks.length > 0
+                                ? (passedChecks / assertionChecks.length) * 100
+                                : null;
+                              const configuredAssertions = testCase.assertions?.length ?? 0;
+
+                              if (historyRuns.length === 0 || runHistoryLoading[testCase.id]) return null;
+
+                              return (
+                                <div className="mt-4 rounded-xl border border-white/10 bg-slate-900/50 p-4">
+                                  <div className="flex flex-wrap items-start justify-between gap-3">
+                                    <div>
+                                      <h5 className="font-semibold">Assertion coverage</h5>
+                                      <p className="mt-1 text-xs text-slate-400">
+                                        {configuredAssertions} response assertion{configuredAssertions === 1 ? "" : "s"} configured · based on {historyRuns.length} loaded run{historyRuns.length === 1 ? "" : "s"}
+                                      </p>
+                                    </div>
+                                    <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${failedChecks > 0 ? "border-red-400/30 bg-red-400/10 text-red-300" : assertionChecks.length > 0 ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "border-slate-400/20 bg-slate-400/5 text-slate-400"}`}>
+                                      {assertionRate == null ? "NO ASSERTION DATA" : `${assertionRate.toFixed(1)}% passed`}
+                                    </span>
+                                  </div>
+                                  {assertionChecks.length > 0 ? (
+                                    <>
+                                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+                                        <div className="h-full rounded-full bg-emerald-400" style={{ width: `${assertionRate ?? 0}%` }} />
+                                      </div>
+                                      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs">
+                                        <span className="text-emerald-300">{passedChecks} passed</span>
+                                        <span className="text-red-300">{failedChecks} failed</span>
+                                        <span className="text-slate-400">{assertionChecks.length} total checks across loaded history</span>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <p className="mt-3 text-sm text-slate-400">
+                                      {configuredAssertions === 0
+                                        ? "This test checks only the HTTP status. Add a response-body assertion when creating a test case to validate returned content or JSON fields."
+                                        : "Assertions are configured, but the loaded runs contain no assertion results. Run this test again and inspect the result."}
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
+                            <div className="mt-3 space-y-3">
+                              {(runHistory[testCase.id] ?? []).map((run, index, history) => {
+                                // The API returns newest first, so the next item is the previous run.
+                                const comparison = compareRunWithPrevious(run, history[index + 1]);
+                                return (
+                                <details key={run.run_id} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                                  <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${run.passed ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "border-red-400/30 bg-red-400/10 text-red-300"}`}>
+                                        {run.passed ? "PASSED" : "FAILED"}
+                                      </span>
+                                      <span className="text-sm text-slate-300">Expected {run.expected_status} · Actual {run.actual_status ?? "No response"}</span>
+                                      <span className="text-xs text-slate-400">{run.response_time_ms == null ? "—" : `${run.response_time_ms} ms`}</span>
+                                      <span className={`rounded-full border px-2 py-1 text-[10px] font-semibold tracking-wide ${comparisonToneClass(comparison.tone)}`}>
+                                        {comparison.label}
+                                      </span>
+                                    </div>
+                                    <span className="text-xs text-slate-500">{new Date(run.created_at).toLocaleString()}</span>
+                                  </summary>
+                                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3">
+                                    <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                                      <input
+                                        type="checkbox"
+                                        checked={(selectedComparisonRuns[testCase.id] ?? []).includes(run.run_id)}
+                                        onChange={() => toggleRunComparisonSelection(testCase.id, run.run_id)}
+                                        className="h-4 w-4 rounded border-white/20 bg-slate-950 accent-emerald-400"
+                                      />
+                                      Select for comparison
+                                    </label>
+                                    <span className="text-xs text-slate-500">Choose 2 runs to compare</span>
+                                  </div>
+                                  <div className="mt-3 border-t border-white/10 pt-3 text-sm">
+                                    {run.error && <p className="wrap-break-word text-red-300">{run.error}</p>}
+                                    {run.assertion_results?.length > 0 ? (
+                                      <div className="mt-2 space-y-2">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Assertion results</p>
+                                        {run.assertion_results.map((assertion, assertionIndex) => (
+                                          <div key={`${run.run_id}-assertion-${assertionIndex}`} className="rounded-lg bg-white/[0.03] p-3">
+                                            <p className={assertion.passed ? "font-medium text-emerald-300" : "font-medium text-red-300"}>
+                                              {assertion.passed ? "✓" : "✕"} {assertion.type}{assertion.path ? `: ${assertion.path}` : ""}
+                                            </p>
+                                            <p className="mt-1 wrap-break-word text-slate-400">{assertion.message}</p>
+                                            {(assertion.expected !== undefined || assertion.actual !== undefined) && (
+                                              <p className="mt-1 wrap-break-word text-xs text-slate-500">
+                                                {assertion.expected !== undefined ? `Expected: ${JSON.stringify(assertion.expected)}` : ""}
+                                                {assertion.actual !== undefined ? ` · Actual: ${JSON.stringify(assertion.actual)}` : ""}
+                                              </p>
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : !run.error ? (
+                                      <p className="text-slate-500">No error or assertion details were recorded for this run.</p>
+                                    ) : null}
+                                    <p className="mt-3 break-all text-xs text-slate-500">Run ID: {run.run_id}</p>
+                                  </div>
+                                </details>
+                                );
+                              })}
+                            </div>
+
+                            {(() => {
+                              const selectedIds = selectedComparisonRuns[testCase.id] ?? [];
+                              const history = runHistory[testCase.id] ?? [];
+                              const selectedRuns = selectedIds
+                                .map((id) => history.find((item) => item.run_id === id))
+                                .filter((item): item is TestRunHistoryItem => Boolean(item));
+                              if (selectedRuns.length !== 2) {
+                                return (
+                                  <div className="mt-4 rounded-xl border border-dashed border-white/10 p-4 text-sm text-slate-400">
+                                    Select two executions above to compare their HTTP status, latency, errors, and assertions.
+                                    {selectedRuns.length === 1 ? " One execution selected." : ""}
+                                  </div>
+                                );
+                              }
+                              const [firstRun, secondRun] = [...selectedRuns].sort(
+                                (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+                              );
+                              const latencyDelta =
+                                firstRun.response_time_ms != null && secondRun.response_time_ms != null
+                                  ? secondRun.response_time_ms - firstRun.response_time_ms
+                                  : null;
+                              const latencyPercent =
+                                latencyDelta != null && firstRun.response_time_ms != null && firstRun.response_time_ms > 0
+                                  ? (latencyDelta / firstRun.response_time_ms) * 100
+                                  : null;
+                              const statusChanged = firstRun.actual_status !== secondRun.actual_status;
+                              const passChanged = firstRun.passed !== secondRun.passed;
+                              return (
+                                <div className="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.03] p-4">
+                                  <div className="flex flex-wrap items-start justify-between gap-2">
+                                    <div>
+                                      <h5 className="font-semibold">Run comparison</h5>
+                                      <p className="mt-1 text-xs text-slate-400">Older execution compared with newer execution.</p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedComparisonRuns((current) => ({ ...current, [testCase.id]: [] }))}
+                                      className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5"
+                                    >
+                                      Clear selection
+                                    </button>
+                                  </div>
+                                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                    {[firstRun, secondRun].map((item, index) => (
+                                      <div key={item.run_id} className="rounded-lg border border-white/10 bg-slate-950/70 p-3">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{index === 0 ? "Older run" : "Newer run"}</p>
+                                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                                          <span className={`rounded-full border px-2 py-1 text-xs font-semibold ${item.passed ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "border-red-400/30 bg-red-400/10 text-red-300"}`}>
+                                            {item.passed ? "PASSED" : "FAILED"}
+                                          </span>
+                                          <span className="text-sm text-slate-300">HTTP {item.actual_status ?? "No response"}</span>
+                                        </div>
+                                        <p className="mt-2 text-sm text-slate-300">Expected HTTP {item.expected_status}</p>
+                                        <p className="mt-1 text-sm text-slate-300">Latency: {item.response_time_ms == null ? "—" : `${item.response_time_ms.toFixed(2)} ms`}</p>
+                                        <p className="mt-1 text-xs text-slate-500">{new Date(item.created_at).toLocaleString()}</p>
+                                        {item.error && <p className="mt-2 break-words text-sm text-red-300">{item.error}</p>}
+                                        <p className="mt-2 text-xs text-slate-500">{item.assertion_results?.length ?? 0} assertion result(s)</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className="mt-3 rounded-lg border border-white/10 p-3">
+                                    <p className="text-sm font-medium">Change summary</p>
+                                    <ul className="mt-2 space-y-1 text-sm text-slate-300">
+                                      <li>{passChanged ? `Test outcome changed: ${firstRun.passed ? "PASS" : "FAIL"} → ${secondRun.passed ? "PASS" : "FAIL"}` : `Test outcome unchanged: ${secondRun.passed ? "PASS" : "FAIL"}`}</li>
+                                      <li>{statusChanged ? `HTTP status changed: ${firstRun.actual_status ?? "No response"} → ${secondRun.actual_status ?? "No response"}` : `HTTP status unchanged: ${secondRun.actual_status ?? "No response"}`}</li>
+                                      <li>{latencyDelta == null ? "Latency change unavailable." : `Latency ${latencyDelta > 0 ? "increased" : latencyDelta < 0 ? "decreased" : "did not change"} by ${Math.abs(latencyDelta).toFixed(2)} ms${latencyPercent == null ? "" : ` (${latencyPercent > 0 ? "+" : ""}${latencyPercent.toFixed(1)}%)`}.`}</li>
+                                      <li>Assertion results: {firstRun.assertion_results?.filter((item) => item.passed).length ?? 0}/{firstRun.assertion_results?.length ?? 0} passed in older run; {secondRun.assertion_results?.filter((item) => item.passed).length ?? 0}/{secondRun.assertion_results?.length ?? 0} passed in newer run.</li>
+                                    </ul>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </section>
+                        )}
+
+                      </article>
+
+                    );
+
+                  })}
+
+                </div>
+
+              )}
+
+            </section>
+
+          </>
+
+        )}
+
+        <footer className="border-t border-white/10 pt-5 text-xs text-slate-500">TraceIQ · API testing and regression intelligence</footer>
+
+      </div>
+
+    </main>
+
+  );
+
+}
