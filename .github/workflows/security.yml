@@ -55,3 +55,22 @@ jobs:
 
       - name: Audit npm dependencies
         run: npm audit --audit-level=high
+
+  python-static-analysis:
+    name: Python Security Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Bandit
+        run: python -m pip install bandit
+
+      - name: Scan backend source code
+        run: bandit -r backend/app -ll
