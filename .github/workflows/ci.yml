@@ -1,3 +1,4 @@
+
 name: TraceIQ CI
 
 on:
@@ -53,6 +54,9 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+
+      - name: Apply database migrations
+        run: python -m alembic upgrade heads
 
       - name: Run backend tests
         run: python -m pytest -v
