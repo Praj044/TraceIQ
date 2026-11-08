@@ -31,7 +31,7 @@ export default function LoginPage() {
         password,
       });
 
-      router.replace("/projects");
+      router.replace("/workspace");
       router.refresh();
     } catch (err) {
       setError(
@@ -102,6 +102,14 @@ export default function LoginPage() {
                 className="w-full rounded-xl border border-[var(--border)] bg-transparent px-4 py-3 outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
                 placeholder="Enter your password"
               />
+            </div>
+            <div className="-mt-2 text-right">
+              <Link
+                href="/forgot-password"
+                className="text-sm font-semibold text-emerald-700 hover:text-emerald-800"
+              >
+                Forgot password?
+              </Link>
             </div>
 
             {error && (

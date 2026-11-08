@@ -1,9 +1,10 @@
-
 "use client";
 
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
 import { apiGet, apiPost } from "@/app/lib/api";
+import { ThemeToggle } from "@/app/components/theme-toggle";
+import { AuthGuard } from "@/app/components/auth-guard";
 
 type Project = {
   id: string;
@@ -55,6 +56,17 @@ export default function ProjectsPage() {
     };
   }, []);
 
+  async function handleSignOut() {
+    setError("");
+    try {
+      await apiPost<void>("/api/v1/auth/logout");
+      window.location.assign("/login");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not sign out. Please try again.",
+      );
+    }
+  }
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
@@ -96,26 +108,29 @@ export default function ProjectsPage() {
   );
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="flex items-center justify-between border-b border-white/10 px-5 py-5 sm:px-8">
-        <Link href="/" className="flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-400 font-bold text-slate-950">
-            T
-          </span>
-          <span>
-            <span className="block text-lg font-semibold">TraceIQ</span>
-            <span className="block text-xs text-slate-400">
-              API intelligence
-            </span>
-          </span>
+    <AuthGuard>
+    <main className="min-h-screen bg-background text-foreground">
+      <header className="flex items-center justify-between border-b border-border px-5 py-5 sm:px-8">
+        <Link href="/" className="flex items-center gap-3 font-semibold tracking-tight">
+          Trace<span className="text-emerald-500">IQ</span>
         </Link>
 
-        <Link
-          href="/"
-          className="rounded-lg border border-white/10 px-4 py-2 text-sm text-slate-300 transition hover:bg-white/5"
-        >
-          ← Dashboard
-        </Link>
+        <div className="flex items-center gap-3">
+          <ThemeToggle />
+          <Link
+            href="/"
+            className="rounded-lg border border-border px-4 py-2 text-sm text-muted-foreground transition hover:bg-white/5"
+          >
+            Dashboard
+          </Link>
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="rounded-lg border border-red-500/30 px-4 py-2 text-sm text-red-600 transition hover:bg-red-500/10 dark:text-red-400"
+          >
+            Sign out
+          </button>
+        </div>
       </header>
 
       <div className="mx-auto max-w-7xl space-y-8 p-5 sm:p-8">
@@ -124,7 +139,7 @@ export default function ProjectsPage() {
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">
             Projects
           </h1>
-          <p className="mt-2 text-slate-400">
+          <p className="mt-2 text-muted-foreground">
             Organize APIs and manage the projects you want to test.
           </p>
         </section>
@@ -150,11 +165,11 @@ export default function ProjectsPage() {
         <section className="grid gap-6 lg:grid-cols-[0.85fr_1.15fr]">
           <form
             onSubmit={createProject}
-            className="h-fit space-y-5 rounded-2xl border border-white/10 bg-slate-900/60 p-5 sm:p-6"
+            className="h-fit space-y-5 rounded-2xl border border-border bg-card p-5 sm:p-6"
           >
             <div>
               <h2 className="text-lg font-semibold">Create a project</h2>
-              <p className="mt-1 text-sm text-slate-400">
+              <p className="mt-1 text-sm text-muted-foreground">
                 Add an API to your testing workspace.
               </p>
             </div>
@@ -174,7 +189,7 @@ export default function ProjectsPage() {
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="e.g. Store API"
-                className="w-full rounded-xl border border-white/10 bg-slate-950 px-4 py-3 text-sm outline-none transition placeholder:text-slate-600 focus:border-emerald-400"
+                className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none transition placeholder:text-muted-foreground focus:border-emerald-400"
               />
             </div>
 
@@ -192,9 +207,9 @@ export default function ProjectsPage() {
                 value={baseUrl}
                 onChange={(event) => setBaseUrl(event.target.value)}
                 placeholder="https://api.example.com"
-                className="w-full rounded-xl border border-white/10 bg-slate-950 px-4 py-3 text-sm outline-none transition placeholder:text-slate-600 focus:border-emerald-400"
+                className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none transition placeholder:text-muted-foreground focus:border-emerald-400"
               />
-              <p className="mt-2 text-xs text-slate-500">
+              <p className="mt-2 text-xs text-muted-foreground">
                 Use the root URL of the API you intend to test.
               </p>
             </div>
@@ -214,7 +229,7 @@ export default function ProjectsPage() {
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
                 placeholder="What does this API do?"
-                className="w-full resize-y rounded-xl border border-white/10 bg-slate-950 px-4 py-3 text-sm outline-none transition placeholder:text-slate-600 focus:border-emerald-400"
+                className="w-full resize-y rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none transition placeholder:text-muted-foreground focus:border-emerald-400"
               />
             </div>
 
@@ -223,21 +238,21 @@ export default function ProjectsPage() {
               disabled={saving}
               className="w-full rounded-xl bg-emerald-400 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {saving ? "Creating project…" : "+ Create project"}
+              {saving ? "Creating project..." : "+ Create project"}
             </button>
           </form>
 
-          <section className="rounded-2xl border border-white/10 bg-slate-900/60 p-5 sm:p-6">
+          <section className="rounded-2xl border border-border bg-card p-5 sm:p-6">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold">Your projects</h2>
-                <p className="mt-1 text-sm text-slate-400">
+                <p className="mt-1 text-sm text-muted-foreground">
                   Projects stored in your database.
                 </p>
               </div>
 
-              <span className="rounded-lg border border-white/10 px-3 py-2 text-xs text-slate-300">
-                {loading ? "Loading…" : `${projects.length} projects`}
+              <span className="rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground">
+                {loading ? "Loading..." : `${projects.length} projects`}
               </span>
             </div>
 
@@ -250,14 +265,14 @@ export default function ProjectsPage() {
                 type="search"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search by name, URL, or description…"
-                className="w-full rounded-xl border border-white/10 bg-slate-950 px-4 py-3 text-sm outline-none transition placeholder:text-slate-600 focus:border-emerald-400"
+                placeholder="Search by name, URL, or description..."
+                className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none transition placeholder:text-muted-foreground focus:border-emerald-400"
               />
             </div>
 
             {loading ? (
-              <p className="py-12 text-center text-sm text-slate-400">
-                Loading projects…
+              <p className="py-12 text-center text-sm text-muted-foreground">
+                Loading projects...
               </p>
             ) : filteredProjects.length === 0 ? (
               <div className="py-12 text-center">
@@ -266,7 +281,7 @@ export default function ProjectsPage() {
                     ? "No projects yet"
                     : "No matching projects"}
                 </p>
-                <p className="mt-2 text-sm text-slate-400">
+                <p className="mt-2 text-sm text-muted-foreground">
                   {projects.length === 0
                     ? "Create a project using the form."
                     : "Try a different search term."}
@@ -278,19 +293,19 @@ export default function ProjectsPage() {
                   <Link
                     key={project.id}
                     href={`/projects/${project.id}`}
-                    className="block rounded-xl border border-white/10 bg-slate-950/20 p-4 transition hover:border-emerald-400/30 hover:bg-white/5"
+                    className="block rounded-xl border border-border bg-muted/30 p-4 transition hover:border-emerald-400/30 hover:bg-white/5"
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <h3 className="wrap-break-word font-medium">
                           {project.name}
                         </h3>
-                        <p className="mt-1 break-all text-xs text-slate-400">
+                        <p className="mt-1 break-all text-xs text-muted-foreground">
                           {project.base_url || "No base URL configured"}
                         </p>
 
                         {project.description && (
-                          <p className="mt-2 text-sm leading-5 text-slate-400">
+                          <p className="mt-2 text-sm leading-5 text-muted-foreground">
                             {project.description}
                           </p>
                         )}
@@ -301,7 +316,7 @@ export default function ProjectsPage() {
                       </span>
                     </div>
 
-                    <p className="mt-3 text-xs text-slate-500">
+                    <p className="mt-3 text-xs text-muted-foreground">
                       Created{" "}
                       {new Date(project.created_at).toLocaleDateString()}
                     </p>
@@ -312,10 +327,17 @@ export default function ProjectsPage() {
           </section>
         </section>
 
-        <footer className="border-t border-white/10 pt-5 text-xs text-slate-500">
+        <footer className="border-t border-border pt-5 text-xs text-muted-foreground">
           TraceIQ · API testing and regression intelligence
         </footer>
       </div>
     </main>
+    </AuthGuard>
   );
 }
+
+
+
+
+
+

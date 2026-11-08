@@ -1,7 +1,5 @@
-
 from uuid import UUID
-
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -57,7 +55,64 @@ def get_project_test_run_summary(
         ) if result.average_response_time_ms is not None else None,
         "last_run_at": result.last_run_at,
     }
+@router.get("/history")
+def get_project_test_run_history(
+    project_id: UUID,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return paginated test execution history for a project."""
 
+    get_owned_project(project_id, user, db)
+
+    statement = (
+        select(APITestRun, APITestCase.name)
+        .join(
+            APITestCase,
+            APITestRun.test_case_id == APITestCase.id,
+        )
+        .where(APITestRun.project_id == project_id)
+        .order_by(
+            APITestRun.created_at.desc(),
+            APITestRun.id.desc(),
+        )
+    )
+
+    total = db.scalar(
+        select(func.count(APITestRun.id)).where(
+            APITestRun.project_id == project_id
+        )
+    ) or 0
+
+    results = db.execute(
+        statement.limit(limit).offset(offset)
+    ).all()
+
+    history = []
+
+    for run, test_name in results:
+        history.append({
+            "run_id": str(run.id),
+            "test_case_id": str(run.test_case_id),
+            "test_name": test_name,
+            "passed": run.passed,
+            "expected_status": run.expected_status,
+            "actual_status": run.actual_status,
+            "response_time_ms": run.response_time_ms,
+            "error": run.error,
+            "assertion_results": run.assertion_results,
+            "created_at": run.created_at,
+        })
+
+    return {
+        "project_id": str(project_id),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "history": history,
+    }
 
 @router.get("/regressions")
 def get_project_regressions(

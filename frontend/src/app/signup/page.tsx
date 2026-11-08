@@ -39,7 +39,7 @@ export default function SignupPage() {
         password,
       });
 
-      router.replace("/projects");
+      router.replace("/workspace");
       router.refresh();
     } catch (err) {
       setError(

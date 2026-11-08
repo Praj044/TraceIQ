@@ -1,5 +1,6 @@
-
 import secrets
+import hashlib
+
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -12,6 +13,9 @@ from app.db.dependencies import get_db
 from app.models.user import User
 from app.schemas.auth import LoginRequest, RegisterRequest, UserResponse
 from app.services.auth_service import hash_password, verify_password
+from pydantic import BaseModel, EmailStr, Field
+from app.models.password_reset_token import PasswordResetToken
+from app.services.email_service import send_password_reset_email
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
@@ -136,7 +140,6 @@ def login(
 def me(user: User = Depends(get_current_user)):
     return user
 
-
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(
     response: Response,
@@ -144,4 +147,125 @@ def logout(
     _csrf: None = Depends(require_csrf),
 ):
     _clear_session(response)
+    response.status_code = status.HTTP_204_NO_CONTENT
     return response
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+    new_password: str = Field(min_length=12, max_length=128)
+
+
+def _hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+@router.post("/forgot-password")
+def forgot_password(
+    payload: ForgotPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    email = str(payload.email).strip().lower()
+    user = db.scalar(select(User).where(User.email == email))
+
+    # Same generic response for unknown emails and accounts without passwords.
+    result = {
+        "message": "If an eligible account exists, password recovery instructions will be available."
+    }
+
+    if (
+        user is None
+        or not user.is_active
+        or user.password_hash is None
+    ):
+        return result
+
+    now = datetime.now(timezone.utc)
+
+    # Invalidate outstanding tokens for this user.
+    outstanding = db.scalars(
+        select(PasswordResetToken).where(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+        )
+    ).all()
+
+    for old_token in outstanding:
+        old_token.used_at = now
+
+    raw_token = secrets.token_urlsafe(32)
+
+    reset_token = PasswordResetToken(
+        user_id=user.id,
+        token_hash=_hash_reset_token(raw_token),
+        expires_at=now + timedelta(minutes=settings.password_reset_minutes),
+    )
+    db.add(reset_token)
+    db.commit()
+
+    # Send the reset link by email; never return the raw token in the API response.
+    reset_url = (
+        f"{settings.frontend_url.rstrip('/')}"
+        f"/reset-password?token={raw_token}"
+    )
+
+    send_password_reset_email(
+        to_email=user.email,
+        reset_url=reset_url,
+    )
+
+    return result
+
+
+@router.post("/reset-password")
+def reset_password(
+    payload: ResetPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    token_hash = _hash_reset_token(payload.token)
+    now = datetime.now(timezone.utc)
+
+    reset_token = db.scalar(
+        select(PasswordResetToken)
+        .where(PasswordResetToken.token_hash == token_hash)
+        .with_for_update()
+    )
+
+    if (
+        reset_token is None
+        or reset_token.used_at is not None
+        or reset_token.expires_at <= now
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired password reset link.",
+        )
+
+    user = db.get(User, reset_token.user_id)
+
+    if user is None or not user.is_active or user.password_hash is None:
+        raise HTTPException(
+            status_code=400,
+            detail="This account cannot reset its password.",
+        )
+
+    user.password_hash = hash_password(payload.new_password)
+    reset_token.used_at = now
+
+    # Invalidate every other outstanding reset token for this account.
+    other_tokens = db.scalars(
+        select(PasswordResetToken).where(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.id != reset_token.id,
+        )
+    ).all()
+
+    for other_token in other_tokens:
+        other_token.used_at = now
+
+    db.commit()
+
+    return {"message": "Password reset successful. Please sign in."}    
